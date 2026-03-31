@@ -6,11 +6,12 @@ A userscript that adds full gamepad controller support to [WikiGacha](https://wi
 
 - **Spatial navigation** — d-pad and left stick move focus between interactive elements on screen
 - **Scene-aware controls** — dedicated card-flip on the results screen; direct pack-open shortcut on the gacha screen
-- **Card focus & highlight** — navigate directly onto cards with a gold glow; all card actions are gamepad-accessible
+- **Card focus & highlight** — navigate directly onto cards with a gold glow; all card types (text and image) are selectable
 - **Wikipedia article overlay** — open the full Wikipedia article for any focused card in a scrollable in-game overlay; links open in a new tab
+- **Dedicated card buttons** — favorite/unfavorite and info panel are mapped to controller buttons instead of the d-pad, keeping card navigation clean
 - **Page navigation** — LB / RB page through card results (1/5, 2/5 …); LB / RB also scroll the article overlay when it is open
 - **Gamepad-friendly alert dialog** — replaces the native browser `alert()` with a styled overlay that can be dismissed with A or B
-- **On-screen HUD** — shows the button map; toggle it with Y
+- **On-screen HUD** — shows the button map; toggle it with SELECT
 - **Auto-connect** — detects controllers already plugged in when the page loads; reconnects on replug
 - **Touch-event passthrough** — fires `touchstart`/`touchend` in addition to `click` so mobile-targeted React handlers respond correctly
 
@@ -21,17 +22,20 @@ A userscript that adds full gamepad controller support to [WikiGacha](https://wi
 | **A** (Cross) | Confirm / click · open Wikipedia overlay for focused card |
 | **B** (Circle) | Close overlay / dialog / stats panel / go back |
 | **X** (Square) | Open pack (gacha screen only) |
-| **Y** (Triangle) | Toggle HUD |
+| **Y** (Triangle) | Toggle card info (i) panel for focused or front card |
+| **RT** (R2) | Favorite / unfavorite focused or front card |
 | **LT** (L2) | Open Wikipedia overlay for focused or front card |
 | **LB / RB** | Prev/next results page · scroll article overlay |
+| **SELECT** | Toggle HUD |
 | **D-pad / Left stick** | Spatial navigation (results screen: flip cards) |
 
 ### Card-specific behaviour
 When a card is focused:
 - **A** — opens the Wikipedia article overlay for that card
-- **A** on the **`i`** button — opens the card's stats panel
-- **A** on the **☆/★** button — adds/removes the card from favourites
+- **Y** — toggles the card's stats/info panel
+- **RT** — adds/removes the card from favourites
 - **B** — closes the stats panel if open
+- The **`i`** and **☆** buttons on cards are intentionally excluded from d-pad navigation
 
 ## Installation
 
@@ -65,6 +69,15 @@ wikigacha-gamepad.user.js
 To test locally, load the `.user.js` file directly in Tampermonkey's editor or use the file:// install method.
 
 ## Changelog
+
+### 1.4.1
+- **Image card selection fixed** — cards with cover images (no `h2` text element) are now correctly detected and focusable; card title for the Wikipedia overlay falls back to the header bar span
+- Card container detection now uses `button[data-no-stack-swipe="1"]` as the universal card marker instead of `h2`
+- **`☆` and `i` card buttons excluded from d-pad navigation** — these are now only reachable via **RT** and **Y** respectively; the d-pad/stick will always land on the card container itself
+- **RT** — favorite / unfavorite the focused or front card
+- **Y** — toggle the card info (i) panel for the focused or front card
+- **SELECT** — toggle HUD (moved from Y)
+- HUD updated to reflect new button mapping
 
 ### 1.3.4
 - **Card focus** — cards are now focusable with the d-pad/stick; focused cards receive a gold outline and glow

@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiGacha Gamepad Support
 // @namespace    https://wikigacha.com/
-// @version      1.3.5
+// @version      1.4.1
 // @description  Adds gamepad controller support to WikiGacha — navigate, open packs, and confirm dialogs with a controller.
 // @author       bene
 // @updateURL    https://raw.githubusercontent.com/bene987/WikiGacha-gamepad/main/wikigacha-gamepad.user.js
@@ -72,11 +72,11 @@
   // ─── Card helpers ────────────────────────────────────────────────────────────
 
   // Walk up from any element inside a card to find the card root div.
-  // Card roots have inline style width:240px / height:340px.
   function getCardContainer(el) {
     let node = el?.parentElement;
     while (node && node !== document.body) {
-      if (node.style && node.style.width === '240px' && node.style.height === '340px') {
+      if (node.classList?.contains('cursor-pointer') &&
+          node.querySelector?.('button[data-no-stack-swipe="1"]')) {
         return node;
       }
       node = node.parentElement;
@@ -85,13 +85,31 @@
   }
 
   function isCardContainer(el) {
-    return !!(el?.style?.width === '240px' && el?.style?.height === '340px' &&
-              el.querySelector?.('h2'));
+    if (!el || el.tagName === 'BUTTON') return false;
+    // Cards always contain at least one data-no-stack-swipe button (☆ / i).
+    // This works for both text-only cards (which have h2) and image cards (which don't).
+    return el.classList?.contains('cursor-pointer') &&
+           !!el.querySelector?.('button[data-no-stack-swipe="1"]');
   }
 
   function getCardTitle(cardEl) {
+    // Text-only cards render the title as an h2 in the art area.
+    // Image cards omit the h2; the title lives in the header bar as a .truncate span.
     const h2 = cardEl?.querySelector('h2');
-    return h2 ? h2.textContent.trim() : null;
+    if (h2) return h2.textContent.trim();
+    const span = cardEl?.querySelector('span.truncate');
+    return span ? span.textContent.trim() : null;
+  }
+
+  // Return the favorite (☆) button inside a card.
+  function getCardFavButton(cardEl) {
+    return cardEl?.querySelector('button[data-no-stack-swipe="1"][aria-label*="favorites"]') ?? null;
+  }
+
+  // Return the info (i) button inside a card.
+  function getCardInfoButton(cardEl) {
+    return [...(cardEl?.querySelectorAll('button[data-no-stack-swipe="1"]') ?? [])]
+      .find(b => b.textContent.trim() === 'i') ?? null;
   }
 
   // Return the card that's currently in front (not stacked / pointer-events:none).
@@ -190,6 +208,9 @@
     const result = [];
 
     document.querySelectorAll(INTERACTIVE_SELECTORS).forEach(el => {
+      // data-no-stack-swipe="1" is only used on card-internal buttons (☆ / i).
+      // They are mapped to RT / Y — always exclude from d-pad navigation.
+      if (el.dataset.noStackSwipe === '1') return;
       if (!seen.has(el) && isVisible(el) && !isInert(el)) {
         seen.add(el);
         result.push(el);
@@ -199,18 +220,27 @@
     // Also include tappable-looking elements not covered by the strict selectors
     // (excludes raw <img> to avoid noise; pack is handled via #gacha-pack-container)
     document.querySelectorAll('[class*="pack"],[class*="card"],[class*="btn"],[class*="button"]').forEach(el => {
+      if (el.dataset.noStackSwipe === '1') return;
       if (!seen.has(el) && isVisible(el) && !isInert(el) && hasTapHandler(el)) {
         seen.add(el);
         result.push(el);
       }
     });
 
-    // Include focusable card containers (the front card in a stack is not pointer-events:none)
-    document.querySelectorAll('button[data-no-stack-swipe="1"]').forEach(iBtn => {
-      const card = getCardContainer(iBtn);
-      if (card && !seen.has(card) && isVisible(card) && !isInert(card)) {
-        seen.add(card);
-        result.push(card);
+    // Include card containers as focusable items (works for both stack and grid views).
+    // Avoid getComputedStyle pointer-events check here — it can misfire on cards that
+    // still carry stale stack-view inline styles. Use direct class checks instead:
+    //   • aria-hidden ancestor → offscreen prerender clone area
+    //   • pointer-events-none on the element itself → explicitly disabled card
+    //   • pointer-events-none on the direct parent → stacked non-front card (stack view)
+    document.querySelectorAll('div.cursor-pointer').forEach(el => {
+      if (!isCardContainer(el)) return;
+      if (el.closest('[aria-hidden="true"]')) return;
+      if (el.classList.contains('pointer-events-none')) return;
+      if (el.parentElement?.classList.contains('pointer-events-none')) return;
+      if (!seen.has(el) && isVisible(el)) {
+        seen.add(el);
+        result.push(el);
       }
     });
 
@@ -818,7 +848,12 @@
             if (t) { openWikiOverlay(t); }
           }
         } else {
-          clickElement(focusedEl);
+          // Last-resort fallback: if the element contains a card title it's likely
+          // a card container that slipped past isCardContainer detection — open the
+          // wiki modal instead of blindly firing a click that could open Wikipedia
+          // in a new tab via the game's own card handler.
+          const t = getCardTitle(focusedEl);
+          if (t) { openWikiOverlay(t); } else { clickElement(focusedEl); }
         }
       } else {
         // Auto-focus first interactive element
@@ -835,7 +870,34 @@
       clickPackButton();
     }
 
+    // ── Y — card info panel for focused or front card ────────────────────────
     if (wasJustPressed(gp, BTN.Y)) {
+      let cardEl = null;
+      if (focusedEl) {
+        cardEl = isCardContainer(focusedEl) ? focusedEl : getCardContainer(focusedEl);
+      }
+      if (!cardEl) cardEl = getFrontCard();
+      if (cardEl) {
+        const infoBtn = getCardInfoButton(cardEl);
+        if (infoBtn) clickElement(infoBtn);
+      }
+    }
+
+    // ── RT — favorite / unfavorite focused or front card ────────────────────
+    if (wasJustPressed(gp, BTN.RT)) {
+      let cardEl = null;
+      if (focusedEl) {
+        cardEl = isCardContainer(focusedEl) ? focusedEl : getCardContainer(focusedEl);
+      }
+      if (!cardEl) cardEl = getFrontCard();
+      if (cardEl) {
+        const favBtn = getCardFavButton(cardEl);
+        if (favBtn) clickElement(favBtn);
+      }
+    }
+
+    // ── SELECT — toggle HUD ──────────────────────────────────────────────────
+    if (wasJustPressed(gp, BTN.SELECT)) {
       toggleHud();
     }
 
@@ -932,9 +994,11 @@
         <tr><td class="gp-btn">A</td><td>Confirm / Wiki</td></tr>
         <tr><td class="gp-btn">B</td><td>Close / Back</td></tr>
         <tr><td class="gp-btn">X</td><td>Open pack</td></tr>
-        <tr><td class="gp-btn">Y</td><td>Toggle HUD</td></tr>
+        <tr><td class="gp-btn">Y</td><td>Card info</td></tr>
+        <tr><td class="gp-btn">RT</td><td>Favorite card</td></tr>
         <tr><td class="gp-btn">LT</td><td>Wiki article</td></tr>
         <tr><td class="gp-btn">LB·RB</td><td>Page · Scroll</td></tr>
+        <tr><td class="gp-btn">SELECT</td><td>Toggle HUD</td></tr>
         <tr><td class="gp-btn">↕↔</td><td>Navigate / Cards</td></tr>
       </table>
     `;
