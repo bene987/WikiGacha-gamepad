@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiGacha Gamepad Support
 // @namespace    https://wikigacha.com/
-// @version      1.0.0
+// @version      1.1.0
 // @description  Adds gamepad controller support to WikiGacha — navigate, open packs, and confirm dialogs with a controller.
 // @author       bene
 // @match        https://wikigacha.com/*
@@ -62,17 +62,36 @@
     '[tabindex]',
   ].join(',');
 
-  // Extra site-specific tappable areas (WikiGacha uses tap-to-open image areas)
-  const TAPPABLE_SELECTORS = [
-    'img',
-    '[class*="pack"]',
-    '[class*="card"]',
-    '[class*="open"]',
-    '[class*="tap"]',
-    '[class*="pull"]',
-    '[class*="btn"]',
-    '[class*="button"]',
-  ].join(',');
+  // ─── Scene detection ─────────────────────────────────────────────────────────
+  //  'gacha'   — main pack-opening screen (#gacha-pack-container present)
+  //  'results' — after-pull card results (Previous/Next card buttons present)
+  //  'generic' — everything else
+  function detectScene() {
+    if (document.getElementById('gacha-pack-container')) return 'gacha';
+    if (document.querySelector('button[aria-label="Previous card"]')) return 'results';
+    return 'generic';
+  }
+
+  // Find the < or > page-navigation button that flanks the "N/M" page counter span.
+  function findPageNavButton(dir) {
+    const spans = [...document.querySelectorAll('span')].filter(
+      s => /^\d+\/\d+$/.test(s.textContent.trim()) && isVisible(s)
+    );
+    for (const span of spans) {
+      const container = span.parentElement;
+      if (!container) continue;
+      const btns = [...container.querySelectorAll('button')].filter(isVisible);
+      const btn = btns.find(b => b.textContent.trim() === (dir === 'prev' ? '<' : '>'));
+      if (btn) return btn;
+    }
+    return null;
+  }
+
+  function findButtonByText(text) {
+    return [...document.querySelectorAll('button')].find(
+      b => b.textContent.trim() === text && isVisible(b)
+    ) ?? null;
+  }
 
   // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -89,33 +108,43 @@
     );
   }
 
+  // Exclude elements that should never receive gamepad focus:
+  // — inside aria-hidden subtrees (e.g. the offscreen card-clone prerender div)
+  // — our own HUD overlay
+  // — elements with pointer-events:none (decorative overlays)
+  function isInert(el) {
+    if (el.closest('[aria-hidden="true"]')) return true;
+    if (el.closest('#' + CFG.hudId)) return true;
+    if (window.getComputedStyle(el).pointerEvents === 'none') return true;
+    return false;
+  }
+
+  function hasTapHandler(el) {
+    if (el.onclick || el.getAttribute('onclick')) return true;
+    return window.getComputedStyle(el).cursor === 'pointer';
+  }
+
   function getInteractiveElements() {
     const seen = new Set();
     const result = [];
 
     document.querySelectorAll(INTERACTIVE_SELECTORS).forEach(el => {
-      if (!seen.has(el) && isVisible(el)) {
+      if (!seen.has(el) && isVisible(el) && !isInert(el)) {
         seen.add(el);
         result.push(el);
       }
     });
 
-    // Also include tappable-looking elements that aren't covered above
-    document.querySelectorAll(TAPPABLE_SELECTORS).forEach(el => {
-      if (!seen.has(el) && isVisible(el) && hasTapHandler(el)) {
+    // Also include tappable-looking elements not covered by the strict selectors
+    // (excludes raw <img> to avoid noise; pack is handled via #gacha-pack-container)
+    document.querySelectorAll('[class*="pack"],[class*="card"],[class*="btn"],[class*="button"]').forEach(el => {
+      if (!seen.has(el) && isVisible(el) && !isInert(el) && hasTapHandler(el)) {
         seen.add(el);
         result.push(el);
       }
     });
 
     return result;
-  }
-
-  function hasTapHandler(el) {
-    // Check for event listeners added via Vue/React data attributes or onclick
-    if (el.onclick || el.getAttribute('onclick')) return true;
-    // Heuristic: elements with cursor:pointer are meant to be clicked
-    return window.getComputedStyle(el).cursor === 'pointer';
   }
 
   function rectCenter(el) {
@@ -166,6 +195,16 @@
   }
 
   function moveFocus(dir) {
+    const scene = detectScene();
+
+    // Results screen: left/right directly navigate cards instead of spatial nav
+    if (scene === 'results' && (dir === 'left' || dir === 'right')) {
+      const label = dir === 'left' ? 'Previous card' : 'Next card';
+      const btn = document.querySelector(`button[aria-label="${label}"]`);
+      if (btn && isVisible(btn)) { setFocus(btn); clickElement(btn); return; }
+    }
+
+    // Fallback: generic spatial navigation
     const target = findNearest(dir);
     if (target) setFocus(target);
   }
@@ -212,51 +251,43 @@
 
   /** Click the primary pack/open button on the current page */
   function clickPackButton() {
-    // Priority order: explicit open-button classes, then any visible image with pointer cursor
-    const candidates = [
-      document.querySelector('[class*="pack"][class*="open"]'),
-      document.querySelector('[class*="tap"]'),
-      document.querySelector('[class*="pack"] img'),
-      ...(function () {
-        const imgs = [...document.querySelectorAll('img')];
-        return imgs.filter(img =>
-          isVisible(img) && window.getComputedStyle(img).cursor === 'pointer'
-        );
-      }()),
-    ].filter(Boolean);
-
-    const target = candidates.find(isVisible);
-    if (target) {
-      setFocus(target);
-      clickElement(target);
+    // Use the known pack container ID first
+    const packContainer = document.getElementById('gacha-pack-container');
+    if (packContainer && isVisible(packContainer)) {
+      setFocus(packContainer);
+      clickElement(packContainer);
+      return;
     }
+    // Fallback: any visible image with a pointer cursor
+    const img = [...document.querySelectorAll('img')].find(
+      i => isVisible(i) && !isInert(i) && window.getComputedStyle(i).cursor === 'pointer'
+    );
+    if (img) { setFocus(img); clickElement(img); }
   }
 
-  /** Click the topmost visible close / OK button in an open dialog */
+  /** Click the topmost visible close / OK / back button */
   function clickCloseButton() {
-    const selectors = [
-      '[class*="modal"] button',
-      '[class*="dialog"] button',
-      '[class*="popup"] button',
-      '[role="dialog"] button',
-      'button',
+    const dismissText = /^(ok|close|confirm|yes|dismiss|×|✕|✖|cancel|back to packs)$/i;
+
+    // Prefer modal/dialog containers, then fall back to any visible button
+    const scopes = [
+      '[class*="modal"]',
+      '[class*="dialog"]',
+      '[class*="popup"]',
+      '[role="dialog"]',
+      'body',
     ];
 
-    // Prefer buttons containing common dismiss text
-    const dismissText = /^(ok|close|confirm|yes|dismiss|×|✕|✖|cancel)$/i;
-
-    for (const sel of selectors) {
-      const buttons = [...document.querySelectorAll(sel)].filter(isVisible);
+    for (const scope of scopes) {
+      const container = document.querySelector(scope);
+      if (!container) continue;
+      const buttons = [...container.querySelectorAll('button')].filter(
+        b => isVisible(b) && !isInert(b)
+      );
       const dismissBtn = buttons.find(b => dismissText.test(b.textContent.trim()));
-      if (dismissBtn) {
-        clickElement(dismissBtn);
-        return;
-      }
-      // Fallback: first visible button in a dialog-like container
-      if (buttons.length > 0 && sel.includes('modal', 'dialog', 'popup')) {
-        clickElement(buttons[0]);
-        return;
-      }
+      if (dismissBtn) { clickElement(dismissBtn); return; }
+      // For modal-like scopes also accept the first visible button as fallback
+      if (scope !== 'body' && buttons.length > 0) { clickElement(buttons[0]); return; }
     }
   }
 
@@ -321,6 +352,17 @@
       toggleHud();
     }
 
+    // ── LB / RB — page navigation on the results screen ─────────────────────
+    if (wasJustPressed(gp, BTN.LB)) {
+      const btn = detectScene() === 'results' ? findPageNavButton('prev') : null;
+      if (btn) { setFocus(btn); clickElement(btn); }
+    }
+
+    if (wasJustPressed(gp, BTN.RB)) {
+      const btn = detectScene() === 'results' ? findPageNavButton('next') : null;
+      if (btn) { setFocus(btn); clickElement(btn); }
+    }
+
     // ── Directional navigation (held with auto-repeat) ──────────────────────
     const dir = getDpadDir(gp) || getStickDir(gp);
 
@@ -380,10 +422,11 @@
       <div class="gp-title">🎮 Gamepad</div>
       <table>
         <tr><td class="gp-btn">A</td><td>Confirm / Click</td></tr>
-        <tr><td class="gp-btn">B</td><td>Close dialog</td></tr>
+        <tr><td class="gp-btn">B</td><td>Close / Back</td></tr>
         <tr><td class="gp-btn">X</td><td>Open pack</td></tr>
         <tr><td class="gp-btn">Y</td><td>Toggle HUD</td></tr>
-        <tr><td class="gp-btn">↕↔</td><td>Navigate</td></tr>
+        <tr><td class="gp-btn">LB·RB</td><td>Prev/Next page</td></tr>
+        <tr><td class="gp-btn">↕↔</td><td>Navigate / Cards</td></tr>
       </table>
     `;
     Object.assign(hud.style, {
