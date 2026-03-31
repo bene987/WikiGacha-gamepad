@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiGacha Gamepad Support
 // @namespace    https://wikigacha.com/
-// @version      1.3.4
+// @version      1.3.5
 // @description  Adds gamepad controller support to WikiGacha — navigate, open packs, and confirm dialogs with a controller.
 // @author       bene
 // @updateURL    https://raw.githubusercontent.com/bene987/WikiGacha-gamepad/main/wikigacha-gamepad.user.js
@@ -280,6 +280,9 @@
   }
 
   function setFocus(el) {
+    // Sweep ALL elements that still carry our ring marker — handles stale rings
+    // left behind when React re-renders and replaces the previously focused node.
+    document.querySelectorAll('[data-gp-prev-outline]').forEach(removeFocusRing);
     if (focusedEl) removeFocusRing(focusedEl);
     focusedEl = el;
     addFocusRing(el);
@@ -300,11 +303,19 @@
     }
   }
 
+  // Matches the ring colour in any format the browser may stringify it to
+  const RING_OUTLINE_RE = /3px solid (rgb\(245,\s*197,\s*24\)|#f5c518)/i;
+
   function removeFocusRing(el) {
     if (!el) return;
-    el.style.outline = el.dataset.gpPrevOutline || '';
+    const prev = el.dataset.gpPrevOutline || '';
+    // Guard against the circular case where our own ring was saved as "previous"
+    el.style.outline = RING_OUTLINE_RE.test(prev) ? '' : prev;
     el.style.outlineOffset = el.dataset.gpPrevOutlineOffset || '';
     el.style.boxShadow = el.dataset.gpPrevBoxShadow || '';
+    delete el.dataset.gpPrevOutline;
+    delete el.dataset.gpPrevOutlineOffset;
+    delete el.dataset.gpPrevBoxShadow;
   }
 
   function clickElement(el) {
