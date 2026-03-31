@@ -1,12 +1,14 @@
 # WikiGacha Gamepad Support
 
-A userscript that adds full gamepad controller support to [WikiGacha](https://wikigacha.com) — open packs, flip through cards, dismiss dialogs, and navigate the whole site without touching a keyboard or mouse.
+A userscript that adds full gamepad controller support to [WikiGacha](https://wikigacha.com) — open packs, flip through cards, read Wikipedia articles, dismiss dialogs, and navigate the whole site without touching a keyboard or mouse.
 
 ## Features
 
 - **Spatial navigation** — d-pad and left stick move focus between interactive elements on screen
 - **Scene-aware controls** — dedicated card-flip on the results screen; direct pack-open shortcut on the gacha screen
-- **Page navigation** — LB / RB page through the card results (1/5, 2/5 …)
+- **Card focus & highlight** — navigate directly onto cards with a gold glow; all card actions are gamepad-accessible
+- **Wikipedia article overlay** — open the full Wikipedia article for any focused card in a scrollable in-game overlay; links open in a new tab
+- **Page navigation** — LB / RB page through card results (1/5, 2/5 …); LB / RB also scroll the article overlay when it is open
 - **Gamepad-friendly alert dialog** — replaces the native browser `alert()` with a styled overlay that can be dismissed with A or B
 - **On-screen HUD** — shows the button map; toggle it with Y
 - **Auto-connect** — detects controllers already plugged in when the page loads; reconnects on replug
@@ -16,12 +18,20 @@ A userscript that adds full gamepad controller support to [WikiGacha](https://wi
 
 | Button | Action |
 |--------|--------|
-| **A** (Cross) | Confirm / click focused element |
-| **B** (Circle) | Close dialog / go back |
-| **X** (Square) | Open pack (shortcut) |
+| **A** (Cross) | Confirm / click · open Wikipedia overlay for focused card |
+| **B** (Circle) | Close overlay / dialog / stats panel / go back |
+| **X** (Square) | Open pack (gacha screen only) |
 | **Y** (Triangle) | Toggle HUD |
-| **LB / RB** | Previous / next results page |
+| **LT** (L2) | Open Wikipedia overlay for focused or front card |
+| **LB / RB** | Prev/next results page · scroll article overlay |
 | **D-pad / Left stick** | Spatial navigation (results screen: flip cards) |
+
+### Card-specific behaviour
+When a card is focused:
+- **A** — opens the Wikipedia article overlay for that card
+- **A** on the **`i`** button — opens the card's stats panel
+- **A** on the **☆/★** button — adds/removes the card from favourites
+- **B** — closes the stats panel if open
 
 ## Installation
 
@@ -55,6 +65,13 @@ wikigacha-gamepad.user.js
 To test locally, load the `.user.js` file directly in Tampermonkey's editor or use the file:// install method.
 
 ## Changelog
+
+### 1.3.4
+- **Card focus** — cards are now focusable with the d-pad/stick; focused cards receive a gold outline and glow
+- **Wikipedia article overlay** — press **A** on a focused card or **LT** at any time to open a gamepad-friendly overlay showing the Wikipedia article summary; **LB/RB** scroll the text; **B** closes it
+- **LB/RB** now dual-purpose: scroll the Wikipedia overlay when open, page through results when closed
+- HUD updated to reflect new controls
+- Navigation locked to overlay buttons while the overlay is open
 
 ### 1.2.0
 - Replace native `alert()` with a gamepad-friendly custom overlay (A / B to dismiss, navigation locked to dialog while open)

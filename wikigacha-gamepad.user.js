@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiGacha Gamepad Support
 // @namespace    https://wikigacha.com/
-// @version      1.2.0
+// @version      1.3.4
 // @description  Adds gamepad controller support to WikiGacha — navigate, open packs, and confirm dialogs with a controller.
 // @author       bene
 // @updateURL    https://raw.githubusercontent.com/bene987/WikiGacha-gamepad/main/wikigacha-gamepad.user.js
@@ -21,6 +21,7 @@
     repeatRate: 140,      // ms between repeated inputs after initial delay
     hudId: 'gp-hud',
     alertId: 'gp-alert',
+    wikiId: 'gp-wiki',
   };
 
   // Standard Gamepad API button indices
@@ -53,6 +54,8 @@
   let lastRepeat = 0;         // when last repeat fired
   let rafHandle = null;
   let dismissAlert = null;    // non-null while custom alert is open
+  let dismissWiki = null;     // non-null while wiki overlay is open
+  let wikiScrollEl = null;    // scrollable content area of the wiki overlay
 
   // ─── Selectors: elements considered "interactive" ───────────────────────────
   const INTERACTIVE_SELECTORS = [
@@ -65,6 +68,48 @@
     '[onclick]',
     '[tabindex]',
   ].join(',');
+
+  // ─── Card helpers ────────────────────────────────────────────────────────────
+
+  // Walk up from any element inside a card to find the card root div.
+  // Card roots have inline style width:240px / height:340px.
+  function getCardContainer(el) {
+    let node = el?.parentElement;
+    while (node && node !== document.body) {
+      if (node.style && node.style.width === '240px' && node.style.height === '340px') {
+        return node;
+      }
+      node = node.parentElement;
+    }
+    return null;
+  }
+
+  function isCardContainer(el) {
+    return !!(el?.style?.width === '240px' && el?.style?.height === '340px' &&
+              el.querySelector?.('h2'));
+  }
+
+  function getCardTitle(cardEl) {
+    const h2 = cardEl?.querySelector('h2');
+    return h2 ? h2.textContent.trim() : null;
+  }
+
+  // Return the card that's currently in front (not stacked / pointer-events:none).
+  function getFrontCard() {
+    for (const iBtn of document.querySelectorAll('button[data-no-stack-swipe="1"]')) {
+      const card = getCardContainer(iBtn);
+      if (card && isVisible(card) && !isInert(card)) return card;
+    }
+    return null;
+  }
+
+  // Detect the Wikipedia language from the page URL (?lang=EN etc.).
+  function getWikiLang() {
+    const params = new URLSearchParams(window.location.search);
+    const l = (params.get('lang') || '').toUpperCase();
+    const map = { EN: 'en', ES: 'es', FR: 'fr', JA: 'ja', ZH_HANS: 'zh', ZH_HANT: 'zh' };
+    return map[l] || (document.documentElement.lang?.slice(0, 2)) || 'en';
+  }
 
   // ─── Scene detection ─────────────────────────────────────────────────────────
   //  'gacha'   — main pack-opening screen (#gacha-pack-container present)
@@ -129,6 +174,12 @@
   }
 
   function getInteractiveElements() {
+    // While our wiki overlay is open, restrict navigation to its buttons only
+    const wikiOverlayEl = document.getElementById(CFG.wikiId);
+    if (wikiOverlayEl) {
+      return [...wikiOverlayEl.querySelectorAll('button')].filter(isVisible);
+    }
+
     // While our alert is open, restrict navigation to its contents only
     const alertOverlay = document.getElementById(CFG.alertId);
     if (alertOverlay) {
@@ -151,6 +202,15 @@
       if (!seen.has(el) && isVisible(el) && !isInert(el) && hasTapHandler(el)) {
         seen.add(el);
         result.push(el);
+      }
+    });
+
+    // Include focusable card containers (the front card in a stack is not pointer-events:none)
+    document.querySelectorAll('button[data-no-stack-swipe="1"]').forEach(iBtn => {
+      const card = getCardContainer(iBtn);
+      if (card && !seen.has(card) && isVisible(card) && !isInert(card)) {
+        seen.add(card);
+        result.push(card);
       }
     });
 
@@ -229,20 +289,35 @@
   function addFocusRing(el) {
     el.dataset.gpPrevOutline = el.style.outline || '';
     el.dataset.gpPrevOutlineOffset = el.style.outlineOffset || '';
+    el.dataset.gpPrevBoxShadow = el.style.boxShadow || '';
     el.style.outline = '3px solid #f5c518';
     el.style.outlineOffset = '2px';
+    if (isCardContainer(el)) {
+      // Extra glow for card focus so it stands out against the dark background
+      const base = el.dataset.gpPrevBoxShadow;
+      el.style.boxShadow = '0 0 0 3px #f5c518, 0 0 28px rgba(245,197,24,0.55)' +
+        (base ? ', ' + base : '');
+    }
   }
 
   function removeFocusRing(el) {
     if (!el) return;
     el.style.outline = el.dataset.gpPrevOutline || '';
     el.style.outlineOffset = el.dataset.gpPrevOutlineOffset || '';
+    el.style.boxShadow = el.dataset.gpPrevBoxShadow || '';
   }
 
   function clickElement(el) {
     if (!el || !isVisible(el)) return;
     el.click();
-    // Simulate touch events for mobile-targeted listeners
+    // Buttons with data-no-stack-swipe="1" are card-internal controls that opted out of
+    // swipe/touch handling. Only calling .click() prevents touch events from bubbling
+    // up to the card container's swipe handler, which would cause double-actions and
+    // card animation flicker.
+    if (el.dataset.noStackSwipe === '1') return;
+    // Simulate touch events for mobile-targeted listeners.
+    // Guard against Safari, which has no global Touch constructor.
+    if (typeof Touch === 'undefined') return;
     ['touchstart', 'touchend'].forEach(type => {
       const touch = new Touch({
         identifier: Date.now(),
@@ -261,6 +336,10 @@
 
   /** Click the primary pack/open button on the current page */
   function clickPackButton() {
+    // Only act on the gacha (pack selection) screen — on the results/grid screen
+    // there is no pack to open and the image fallback would click card contents,
+    // triggering the game's card handlers multiple times.
+    if (detectScene() !== 'gacha') return;
     // Use the known pack container ID first
     const packContainer = document.getElementById('gacha-pack-container');
     if (packContainer && isVisible(packContainer)) {
@@ -277,8 +356,14 @@
 
   /** Click the topmost visible close / OK / back button */
   function clickCloseButton() {
+    // Dismiss wiki overlay first if open
+    if (dismissWiki) { dismissWiki(); return; }
     // Dismiss our custom alert first if one is open
     if (dismissAlert) { dismissAlert(); return; }
+
+    // Close a card's stats/info panel if one is open (data-card-info-open="1")
+    const openCard = document.querySelector('[data-card-info-open="1"]');
+    if (openCard && isVisible(openCard)) { clickElement(openCard); return; }
 
     const dismissText = /^(ok|close|confirm|yes|dismiss|×|✕|✖|cancel|back to packs)$/i;
 
@@ -398,6 +483,269 @@
     setFocus(okBtn);
   }
 
+  // ─── Wikipedia article overlay ────────────────────────────────────────────────
+
+  function openWikiOverlay(title) {
+    document.getElementById(CFG.wikiId)?.remove();
+    dismissWiki = null;
+    wikiScrollEl = null;
+
+    const lang = getWikiLang();
+    // Use the Action API (?action=parse) — it has open CORS headers unlike mobile-sections.
+    // prop=text gives the full rendered HTML; prop=images gives the lead image title.
+    const apiBase = `https://${lang}.wikipedia.org/w/api.php`;
+    const apiUrl = `${apiBase}?action=parse&page=${encodeURIComponent(title)}&prop=text%7Cimages&disableeditsection=1&format=json&origin=*`;
+
+    const overlay = document.createElement('div');
+    overlay.id = CFG.wikiId;
+    overlay.setAttribute('role', 'dialog');
+    overlay.setAttribute('aria-modal', 'true');
+    Object.assign(overlay.style, {
+      position: 'fixed',
+      inset: '0',
+      zIndex: '2147483645',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(0,0,0,0.88)',
+      backdropFilter: 'blur(6px)',
+    });
+
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+      background: '#111',
+      border: '1px solid rgba(245,197,24,0.4)',
+      borderRadius: '14px',
+      width: 'min(600px, 92vw)',
+      maxHeight: '82vh',
+      display: 'flex',
+      flexDirection: 'column',
+      overflow: 'hidden',
+      fontFamily: 'sans-serif',
+      boxShadow: '0 24px 80px rgba(0,0,0,0.9)',
+    });
+
+    // ── Header ──────────────────────────────────────────────────────────────
+    const header = document.createElement('div');
+    Object.assign(header.style, {
+      padding: '14px 18px 10px',
+      borderBottom: '1px solid rgba(255,255,255,0.1)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      flexShrink: '0',
+      gap: '8px',
+    });
+    const titleEl = document.createElement('span');
+    titleEl.textContent = title;
+    Object.assign(titleEl.style, {
+      color: '#f5c518',
+      fontWeight: 'bold',
+      fontSize: '15px',
+      overflow: 'hidden',
+      textOverflow: 'ellipsis',
+      whiteSpace: 'nowrap',
+      flexShrink: '1',
+    });
+    const closeHint = document.createElement('span');
+    closeHint.textContent = 'B · close';
+    Object.assign(closeHint.style, {
+      color: '#555',
+      fontSize: '10px',
+      fontFamily: 'monospace',
+      flexShrink: '0',
+    });
+    header.append(titleEl, closeHint);
+
+    // ── Scroll area ─────────────────────────────────────────────────────────
+    const scroll = document.createElement('div');
+    Object.assign(scroll.style, {
+      overflowY: 'auto',
+      padding: '16px 18px',
+      flexGrow: '1',
+      scrollbarWidth: 'thin',
+      scrollbarColor: '#333 #111',
+    });
+    wikiScrollEl = scroll;
+
+    const loading = document.createElement('p');
+    loading.textContent = 'Loading…';
+    Object.assign(loading.style, { color: '#888', textAlign: 'center', padding: '20px 0', margin: '0' });
+    scroll.appendChild(loading);
+
+    // ── Footer ───────────────────────────────────────────────────────────────
+    const footer = document.createElement('div');
+    Object.assign(footer.style, {
+      padding: '10px 18px 14px',
+      borderTop: '1px solid rgba(255,255,255,0.1)',
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: '10px',
+      flexShrink: '0',
+    });
+
+    const openBtn = document.createElement('button');
+    openBtn.id = CFG.wikiId + '-open';
+    openBtn.textContent = 'Open in Wikipedia ↗';
+    Object.assign(openBtn.style, {
+      background: '#1c1c1c',
+      color: '#666',
+      border: '1px solid #333',
+      borderRadius: '20px',
+      padding: '8px 16px',
+      fontSize: '12px',
+      cursor: 'pointer',
+      transition: 'color 0.15s, border-color 0.15s',
+    });
+    openBtn.addEventListener('mouseenter', () => { openBtn.style.color = '#fff'; openBtn.style.borderColor = '#888'; });
+    openBtn.addEventListener('mouseleave', () => { openBtn.style.color = openBtn.dataset.loaded ? '#ddd' : '#666'; openBtn.style.borderColor = openBtn.dataset.loaded ? '#666' : '#333'; });
+
+    const scrollHint = document.createElement('span');
+    scrollHint.textContent = 'LB·RB  scroll';
+    Object.assign(scrollHint.style, { color: '#444', fontSize: '10px', fontFamily: 'monospace', flexShrink: '0' });
+
+    const closeBtn = document.createElement('button');
+    closeBtn.id = CFG.wikiId + '-close';
+    closeBtn.textContent = 'Close';
+    Object.assign(closeBtn.style, {
+      background: '#f5c518',
+      color: '#000',
+      border: 'none',
+      borderRadius: '20px',
+      padding: '8px 24px',
+      fontSize: '12px',
+      fontWeight: 'bold',
+      cursor: 'pointer',
+      transition: 'background 0.15s',
+    });
+    closeBtn.addEventListener('mouseenter', () => { closeBtn.style.background = '#ffd84d'; });
+    closeBtn.addEventListener('mouseleave', () => { closeBtn.style.background = '#f5c518'; });
+
+    footer.append(openBtn, scrollHint, closeBtn);
+
+    // ── Dismiss logic ────────────────────────────────────────────────────────
+    function dismiss() {
+      overlay.remove();
+      dismissWiki = null;
+      wikiScrollEl = null;
+      if (focusedEl && !document.body.contains(focusedEl)) focusedEl = null;
+    }
+    dismissWiki = dismiss;
+    closeBtn.addEventListener('click', dismiss);
+    overlay.addEventListener('click', e => { if (e.target === overlay) dismiss(); });
+
+    box.append(header, scroll, footer);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    // Auto-focus close button so pressing A immediately dismisses
+    setFocus(closeBtn);
+
+    // ── Fetch full Wikipedia article (Action API, CORS-safe) ─────────────────
+    fetch(apiUrl)
+      .then(r => { if (!r.ok) throw new Error(r.status); return r.json(); })
+      .then(data => {
+        if (!document.body.contains(overlay)) return;
+        if (data.error) throw new Error(data.error.info);
+        scroll.innerHTML = '';
+
+        const parse = data.parse;
+        const articleUrl = `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(parse.title || title)}`;
+
+        // Lead image: first image from the article that looks like a real photo
+        const leadImg = (parse.images || []).find(
+          n => /\.(jpe?g|png|gif|webp|svg)$/i.test(n) &&
+               !/flag|coa|coat|arms|logo|icon|symbol|signature|map|blank/i.test(n)
+        );
+        if (leadImg) {
+          const img = document.createElement('img');
+          img.alt = leadImg;
+          img.src = `https://commons.wikimedia.org/wiki/Special:FilePath/${encodeURIComponent(leadImg)}?width=320`;
+          Object.assign(img.style, {
+            float: 'right',
+            marginLeft: '14px',
+            marginBottom: '8px',
+            maxWidth: '160px',
+            maxHeight: '160px',
+            objectFit: 'cover',
+            borderRadius: '8px',
+            border: '1px solid rgba(255,255,255,0.1)',
+          });
+          scroll.appendChild(img);
+        }
+
+        // Scoped styles for rendered Wikipedia HTML
+        if (!document.getElementById('gp-wiki-style')) {
+          const styleEl = document.createElement('style');
+          styleEl.id = 'gp-wiki-style';
+          styleEl.textContent = `
+            .gp-wiki-content { color: #ddd; font-size: 13px; line-height: 1.75; }
+            .gp-wiki-content p { margin: 0 0 10px; }
+            .gp-wiki-content b { color: #fff; }
+            .gp-wiki-content a { color: #79b8f3; text-decoration: underline; }
+            .gp-wiki-content ul, .gp-wiki-content ol { margin: 0 0 10px; padding-left: 20px; }
+            .gp-wiki-content li { margin-bottom: 3px; }
+            .gp-wiki-content sup, .gp-wiki-content sub { font-size: 10px; }
+            .gp-wiki-content h2, .gp-wiki-content h3 {
+              color: #f5c518; font-size: 13px; font-weight: bold;
+              margin: 18px 0 6px; padding-bottom: 4px;
+              border-bottom: 1px solid rgba(245,197,24,0.2);
+            }
+            .gp-wiki-content table, .gp-wiki-content figure,
+            .gp-wiki-content .thumb, .gp-wiki-content .infobox,
+            .gp-wiki-content .infobox-subbox, .gp-wiki-content .navbox,
+            .gp-wiki-content .mw-editsection, .gp-wiki-content .reflist,
+            .gp-wiki-content .mbox, .gp-wiki-content .hatnote,
+            .gp-wiki-content .sistersitebox, .gp-wiki-content .metadata,
+            .gp-wiki-content .noprint { display: none; }
+          `;
+          document.head.appendChild(styleEl);
+        }
+
+        const content = document.createElement('div');
+        content.className = 'gp-wiki-content';
+        content.innerHTML = parse.text['*'];
+
+        // Fix relative links → absolute, new tab
+        for (const a of content.querySelectorAll('a')) {
+          a.target = '_blank';
+          a.rel = 'noopener noreferrer';
+          const href = a.getAttribute('href');
+          if (href && href.startsWith('/')) {
+            a.href = `https://${lang}.wikipedia.org${href}`;
+          }
+        }
+
+        // Strip noisy elements
+        for (const el of content.querySelectorAll(
+          '.mw-editsection, .reflist, .navbox, .mbox, .hatnote,' +
+          '.sistersitebox, .metadata, .noprint, [role="note"],' +
+          'table, figure, .thumb, .infobox, .infobox-subbox'
+        )) { el.remove(); }
+
+        scroll.appendChild(content);
+
+        openBtn.dataset.loaded = '1';
+        openBtn.style.color = '#ddd';
+        openBtn.style.borderColor = '#666';
+        openBtn.addEventListener('click', () => { window.open(articleUrl, '_blank', 'noopener,noreferrer'); dismiss(); });
+      })
+      .catch(() => {
+        if (!document.body.contains(overlay)) return;
+        scroll.innerHTML = '';
+        const err = document.createElement('p');
+        err.textContent = 'Could not load article.';
+        Object.assign(err.style, { color: '#888', textAlign: 'center', padding: '20px 0', margin: '0', fontSize: '13px' });
+        scroll.appendChild(err);
+        const articleUrl = `https://${lang}.wikipedia.org/wiki/${encodeURIComponent(title)}`;
+        openBtn.dataset.loaded = '1';
+        openBtn.style.color = '#ddd';
+        openBtn.style.borderColor = '#666';
+        openBtn.addEventListener('click', () => { window.open(articleUrl, '_blank', 'noopener,noreferrer'); dismiss(); });
+      });
+  }
+
   // ─── Gamepad polling ─────────────────────────────────────────────────────────
 
   function getGamepad() {
@@ -439,7 +787,28 @@
     // ── Button events (edge-triggered) ──────────────────────────────────────
     if (wasJustPressed(gp, BTN.A)) {
       if (focusedEl && isVisible(focusedEl)) {
-        clickElement(focusedEl);
+        // Resolve whether the focused element IS a card or is a child of one.
+        // getCardContainer walks up from parentElement, so use focusedEl directly
+        // when it is already the card container.
+        const cardEl = isCardContainer(focusedEl)
+          ? focusedEl
+          : getCardContainer(focusedEl);
+        if (cardEl) {
+          // Any data-no-stack-swipe button inside a card (i-info, favorites, etc.)
+          // should always trigger its own native click action.
+          if (focusedEl !== cardEl && focusedEl.dataset.noStackSwipe === '1') {
+            clickElement(focusedEl);
+          // If the card's stats/info panel is open, click the card to close it.
+          } else if (cardEl.dataset.cardInfoOpen === '1') {
+            clickElement(cardEl);
+          } else {
+            // Card container or any other non-special card child → wiki overlay
+            const t = getCardTitle(cardEl);
+            if (t) { openWikiOverlay(t); }
+          }
+        } else {
+          clickElement(focusedEl);
+        }
       } else {
         // Auto-focus first interactive element
         const els = getInteractiveElements();
@@ -459,15 +828,36 @@
       toggleHud();
     }
 
-    // ── LB / RB — page navigation on the results screen ─────────────────────
+    // ── LT — open Wikipedia overlay for focused or front card ───────────────
+    if (wasJustPressed(gp, BTN.LT)) {
+      let cardEl = null;
+      if (focusedEl) {
+        cardEl = isCardContainer(focusedEl) ? focusedEl : getCardContainer(focusedEl);
+      }
+      if (!cardEl) cardEl = getFrontCard();
+      if (cardEl) {
+        const t = getCardTitle(cardEl);
+        if (t) openWikiOverlay(t);
+      }
+    }
+
+    // ── LB / RB — scroll wiki overlay OR page navigation on results screen ──
     if (wasJustPressed(gp, BTN.LB)) {
-      const btn = detectScene() === 'results' ? findPageNavButton('prev') : null;
-      if (btn) { setFocus(btn); clickElement(btn); }
+      if (wikiScrollEl) {
+        wikiScrollEl.scrollBy({ top: -160, behavior: 'smooth' });
+      } else {
+        const btn = detectScene() === 'results' ? findPageNavButton('prev') : null;
+        if (btn) { setFocus(btn); clickElement(btn); }
+      }
     }
 
     if (wasJustPressed(gp, BTN.RB)) {
-      const btn = detectScene() === 'results' ? findPageNavButton('next') : null;
-      if (btn) { setFocus(btn); clickElement(btn); }
+      if (wikiScrollEl) {
+        wikiScrollEl.scrollBy({ top: 160, behavior: 'smooth' });
+      } else {
+        const btn = detectScene() === 'results' ? findPageNavButton('next') : null;
+        if (btn) { setFocus(btn); clickElement(btn); }
+      }
     }
 
     // ── Directional navigation (held with auto-repeat) ──────────────────────
@@ -528,11 +918,12 @@
     hud.innerHTML = `
       <div class="gp-title">🎮 Gamepad</div>
       <table>
-        <tr><td class="gp-btn">A</td><td>Confirm / Click</td></tr>
+        <tr><td class="gp-btn">A</td><td>Confirm / Wiki</td></tr>
         <tr><td class="gp-btn">B</td><td>Close / Back</td></tr>
         <tr><td class="gp-btn">X</td><td>Open pack</td></tr>
         <tr><td class="gp-btn">Y</td><td>Toggle HUD</td></tr>
-        <tr><td class="gp-btn">LB·RB</td><td>Prev/Next page</td></tr>
+        <tr><td class="gp-btn">LT</td><td>Wiki article</td></tr>
+        <tr><td class="gp-btn">LB·RB</td><td>Page · Scroll</td></tr>
         <tr><td class="gp-btn">↕↔</td><td>Navigate / Cards</td></tr>
       </table>
     `;
