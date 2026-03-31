@@ -4,6 +4,8 @@
 // @version      1.2.0
 // @description  Adds gamepad controller support to WikiGacha — navigate, open packs, and confirm dialogs with a controller.
 // @author       bene
+// @updateURL    https://raw.githubusercontent.com/bene987/WikiGacha-gamepad/main/wikigacha-gamepad.user.js
+// @downloadURL  https://raw.githubusercontent.com/bene987/WikiGacha-gamepad/main/wikigacha-gamepad.user.js
 // @match        https://wikigacha.com/*
 // @grant        none
 // @run-at       document-idle
