@@ -26,7 +26,7 @@ A userscript that adds full gamepad controller support to [WikiGacha](https://wi
 ## Installation
 
 1. Install a userscript manager — [Tampermonkey](https://www.tampermonkey.net/) or [Violentmonkey](https://violentmonkey.github.io/) are both supported.
-2. Click **[Install script](https://raw.githubusercontent.com/kksoftwareag/WikiGacha-gamepad/main/wikigacha-gamepad.user.js)** — your manager will prompt you to confirm.
+2. Click **[Install script](https://raw.githubusercontent.com/bene987/WikiGacha-gamepad/main/wikigacha-gamepad.user.js)** — your manager will prompt you to confirm.
 3. Open [wikigacha.com](https://wikigacha.com) and plug in a controller.
 
 ### Manual install
