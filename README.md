@@ -38,11 +38,11 @@ Download [`wikigacha-gamepad.user.js`](wikigacha-gamepad.user.js) and drag it on
 | Controller | Tested |
 |------------|--------|
 | Xbox Series / One (USB & Bluetooth) | ✅ |
-| PlayStation 4 / 5 (USB & Bluetooth) | ✅ |
-| Nintendo Switch Pro Controller (USB) | ✅ |
-| Generic XInput / DirectInput | should work |
+| PlayStation 4 / 5 (USB & Bluetooth) | untested |
+| Nintendo Switch Pro Controller (USB) | untested |
+| Generic XInput / DirectInput | untested |
 
-Requires a browser with the [Gamepad API](https://developer.mozilla.org/en-US/docs/Web/API/Gamepad_API) — Chrome, Edge, Firefox, and Safari 16.4+ all qualify.
+Any controller supported by the [Gamepad API](https://developer.mozilla.org/en-US/docs/Web/API/Gamepad_API) should work. Requires Chrome, Edge, Firefox, or Safari 16.4+.
 
 ## Development
 
