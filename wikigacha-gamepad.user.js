@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         WikiGacha Gamepad Support
 // @namespace    https://wikigacha.com/
-// @version      1.1.0
+// @version      1.2.0
 // @description  Adds gamepad controller support to WikiGacha — navigate, open packs, and confirm dialogs with a controller.
 // @author       bene
 // @match        https://wikigacha.com/*
@@ -18,6 +18,7 @@
     repeatDelay: 380,     // ms before auto-repeat starts while holding d-pad
     repeatRate: 140,      // ms between repeated inputs after initial delay
     hudId: 'gp-hud',
+    alertId: 'gp-alert',
   };
 
   // Standard Gamepad API button indices
@@ -49,6 +50,7 @@
   let holdStart = 0;          // when current direction was first held
   let lastRepeat = 0;         // when last repeat fired
   let rafHandle = null;
+  let dismissAlert = null;    // non-null while custom alert is open
 
   // ─── Selectors: elements considered "interactive" ───────────────────────────
   const INTERACTIVE_SELECTORS = [
@@ -125,6 +127,12 @@
   }
 
   function getInteractiveElements() {
+    // While our alert is open, restrict navigation to its contents only
+    const alertOverlay = document.getElementById(CFG.alertId);
+    if (alertOverlay) {
+      return [...alertOverlay.querySelectorAll('button')].filter(isVisible);
+    }
+
     const seen = new Set();
     const result = [];
 
@@ -267,6 +275,9 @@
 
   /** Click the topmost visible close / OK / back button */
   function clickCloseButton() {
+    // Dismiss our custom alert first if one is open
+    if (dismissAlert) { dismissAlert(); return; }
+
     const dismissText = /^(ok|close|confirm|yes|dismiss|×|✕|✖|cancel|back to packs)$/i;
 
     // Prefer modal/dialog containers, then fall back to any visible button
@@ -289,6 +300,100 @@
       // For modal-like scopes also accept the first visible button as fallback
       if (scope !== 'body' && buttons.length > 0) { clickElement(buttons[0]); return; }
     }
+  }
+
+  // ─── Custom alert dialog ──────────────────────────────────────────────────────
+
+  function gpAlert(message) {
+    // Remove any lingering overlay
+    document.getElementById(CFG.alertId)?.remove();
+    dismissAlert = null;
+
+    const overlay = document.createElement('div');
+    overlay.id = CFG.alertId;
+    overlay.setAttribute('role', 'alertdialog');
+    overlay.setAttribute('aria-modal', 'true');
+    Object.assign(overlay.style, {
+      position: 'fixed',
+      inset: '0',
+      zIndex: '2147483646',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      background: 'rgba(0,0,0,0.72)',
+      backdropFilter: 'blur(3px)',
+    });
+
+    const box = document.createElement('div');
+    Object.assign(box.style, {
+      background: '#1a1a1a',
+      border: '1px solid rgba(245,197,24,0.45)',
+      borderRadius: '12px',
+      padding: '24px 28px',
+      maxWidth: '340px',
+      width: '90vw',
+      boxShadow: '0 20px 60px rgba(0,0,0,0.85)',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: 'center',
+      gap: '18px',
+      fontFamily: 'sans-serif',
+    });
+
+    const msg = document.createElement('p');
+    msg.textContent = String(message ?? '');
+    Object.assign(msg.style, {
+      color: '#e5e5e5',
+      fontSize: '14px',
+      lineHeight: '1.6',
+      textAlign: 'center',
+      margin: '0',
+      whiteSpace: 'pre-wrap',
+    });
+
+    const okBtn = document.createElement('button');
+    okBtn.id = CFG.alertId + '-ok';
+    okBtn.textContent = 'OK';
+    Object.assign(okBtn.style, {
+      background: '#f5c518',
+      color: '#000',
+      border: 'none',
+      borderRadius: '20px',
+      padding: '10px 44px',
+      fontSize: '14px',
+      fontWeight: 'bold',
+      cursor: 'pointer',
+      transition: 'background 0.15s',
+    });
+    okBtn.addEventListener('mouseenter', () => { okBtn.style.background = '#ffd84d'; });
+    okBtn.addEventListener('mouseleave', () => { okBtn.style.background = '#f5c518'; });
+
+    const hint = document.createElement('span');
+    hint.textContent = 'A · B  to dismiss';
+    Object.assign(hint.style, {
+      color: '#444',
+      fontSize: '10px',
+      fontFamily: 'monospace',
+    });
+
+    function dismiss() {
+      overlay.remove();
+      dismissAlert = null;
+      // Clear focus ref if it was pointing at the now-removed button
+      if (focusedEl && !document.body.contains(focusedEl)) focusedEl = null;
+    }
+
+    dismissAlert = dismiss;
+    okBtn.addEventListener('click', dismiss);
+    // Backdrop click also dismisses
+    overlay.addEventListener('click', e => { if (e.target === overlay) dismiss(); });
+
+    box.append(msg, okBtn, hint);
+    overlay.appendChild(box);
+    document.body.appendChild(overlay);
+
+    // Auto-focus OK so pressing A immediately works
+    setFocus(okBtn);
   }
 
   // ─── Gamepad polling ─────────────────────────────────────────────────────────
@@ -512,6 +617,12 @@
     }
 
     console.log('[WikiGacha Gamepad] Script loaded — connect a controller to play.');
+
+    // Intercept native alert() when a gamepad is connected
+    const _nativeAlert = window.alert.bind(window);
+    window.alert = function (message) {
+      if (gamepadIndex >= 0) { gpAlert(message); } else { _nativeAlert(message); }
+    };
   }
 
   if (document.readyState === 'loading') {
